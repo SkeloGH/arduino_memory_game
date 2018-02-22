@@ -1,20 +1,20 @@
-const int PLAYER_WAIT_TIME = 2000; // The time in milliseconds allowed between button presses
+#define PLAYER_WAIT_TIME 2000  // The time in milliseconds allowed between button presses
 
-bool _button_down = false;    // Used to check if a button is pressed
-bool _wait = false;           // Is the program _waiting for the user to press a button
-bool _should_reset = false;   // Used to indicate to the program that once the player lost
-bool _times_up = false;       // Used to indicate the elapsed time's up.
-byte _sequence[100];          // Initialize storage for the light _sequence
-byte _seq_length = 0;         // Current length of the _sequence
-byte _input_count = 0;        // The number of times that the player has pressed a (correct) button in a given turn
-byte _last_input = 0;         // Last input from the player
-byte _expected_input = 0;     // The pin number expected for the player to input a signal to
-byte _sound_pin = 5;          // Speaker output
-byte _total_pins = 2;         // Number of buttons/LEDs (While working on this, I was using only 2 LEDs)
-                              // You could make the game harder by adding an additional LED/button/resistors combination.
-byte _pins[] = {13, 8};       // Button input pins and LED ouput pins - change these values if you want to connect your buttons to other pins
-                              // The number of elements must match _total_pins below
-long _last_input_time = 0;     // Timer variable for the delay between user inputs
+bool _input_active = false;         // Used to check if a button is pressed
+bool _await_input = false;          // Is the program _waiting for the user to press a button
+bool _is_game_over = false;         // Used to indicate to the program that once the player lost
+bool _is_wait_expired = false;      // Used to indicate the elapsed time's up.
+byte _sequence[100];                // Initialize storage for the light _sequence
+byte _seq_length = 0;               // Current length of the _sequence
+byte _seq_match_count = 0;          // The number of times that the player has pressed a (correct) button in a given turn
+byte _last_input = 0;               // Last input from the player
+byte _expected_input = 0;           // The pin number expected for the player to input a signal to
+byte _sound_pin = 5;                // Speaker output
+byte _total_pins = 2;               // Number of buttons/LEDs (While working on this, I was using only 2 LEDs)
+                                    // You could make the game harder by adding an additional LED/button/resistors combination.
+byte _pins[] = {13, 8};             // Button input pins and LED ouput pins - change these values if you want to connect your buttons to other pins
+                                    // The number of elements must match _total_pins below
+long _last_input_time = 0;          // Timer variable for the delay between user inputs
 
 ///
 /// DEVICE FUNCTIONS
@@ -62,46 +62,27 @@ void flash(short freq){
   }
 }
 
-void readPins(){
-  _expected_input = _sequence[_input_count];       // - Find the value we expect from the player
-  Serial.print("Expected: ");
-  Serial.println(_expected_input);
+void readInputs(){
+  ///
+  /// Detect if the buttons are pressed or not
+  ///
 
-  for(int i = 0; i < _total_pins; i++){            // - Loop through the all the pins and check wether
-    byte current_pin = _pins[i];
-    byte is_button_pressed = digitalRead(current_pin) != HIGH;
+  for(int i = 0; i < _total_pins; i++){
+    byte current_input = _pins[i];
+    bool is_active = digitalRead(current_input) == HIGH;
 
-    if(current_pin == _expected_input){
-      continue;                               // - Nothing to do, continue iterating
-    }
-    if(!is_button_pressed){
-      _last_input = current_pin;
-      _should_reset = true;                       // - Set the _should_reset - this means you lost
-      _button_down = true;                          // - This will prevent the program from doing the same thing over and over again
+    if(is_active){
+      _last_input = current_input;
+      _input_active = true;
+      _last_input_time = millis();
+
+      if(current_input != _expected_input){
+        _is_game_over = true;
+      }
+
       Serial.print("Read: ");
-      Serial.println(_last_input);
-    }
-  }
-  if(digitalRead(_expected_input) == 1){        // The player pressed the right button
-    _last_input_time = millis();                     //
-    _last_input = _expected_input;
-    _input_count++;                             // The user pressed a (correct) button again
-    _button_down = true;                            // This will prevent the program from doing the same thing over and over again
-    Serial.print("Read: ");
-    Serial.println(_last_input);
-  }
-}
-
-void onButtonDown(){
-  _button_down = false;
-  delay(20);
-  if(_should_reset){                              // If this was set to true up above, you lost
-    doLoseProcess();                          // So we do the losing _sequence of events
-  }else{
-    if(_input_count == _seq_length){                 // Has the player finished repeating the _sequence
-      _wait = false;                           // If so, this will make the next turn the program's turn
-      _input_count = 0;                         // Reset the number of times that the player has pressed a button
-      delay(1500);
+      Serial.println(current_input);
+      break;
     }
   }
 }
@@ -115,16 +96,16 @@ void resetGame(){
   /// This function resets all the game variables to their default values
   ///
   _seq_length = 0;
-  _input_count = 0;
+  _seq_match_count = 0;
   _last_input = 0;
   _expected_input = 0;
-  _button_down = false;
-  _wait = false;
-  _should_reset = false;
+  _input_active = false;
+  _await_input = false;
+  _is_game_over = false;
   flash(150);
 }
 
-void setSequence(){
+void incrementSequence(){
   /// Puts a new random value in the last position of the current _sequence,
   ///  then increases the new _sequence length.
   ///  https://www.arduino.cc/en/Reference/RandomSeed
@@ -151,7 +132,7 @@ void playSequence(){
     }
 }
 
-void doLoseProcess(){
+void terminateGame(){
   ///
   /// The events that occur upon a loss:
   /// - Shows the user the last _sequence.
@@ -164,43 +145,79 @@ void doLoseProcess(){
   resetGame();
 }
 
+void verifyTurnFinished(){
+  ///
+  /// Turn validation actions
+  /// - Reset the input flag to allow new events to be captured
+  /// - Verify the turn input is valid
+  /// - Increase the matching sequence counter
+  /// - Acknowledge user input with beep feedback
+  /// - Check if user input sequence is complete
+  /// - Stop capturing inputs and let program continue
+  ///
+  _input_active = false;
+
+  if(_last_input == _expected_input){
+    _seq_match_count++;
+    beep(10);
+  }
+
+  if(_seq_match_count == _seq_length){
+    _await_input = false;
+  }
+}
+
 void arduinoTurn(){
   ///
   /// Arduino's turn actions:
+  /// - Set a time span for delivering new instructions
   /// - Set all the pins mode as output
   /// - Define the new _sequence
   /// - Show the _sequence to the player
   /// - Set Wait to true as it's now going to be the turn of the player
   /// - Initialize measuring of the player's response time
+  /// - Reset the number of times that the player has pressed a button
   /// - Make a beep for the player to be aware
   ///
+  delay(1500);
   setAllPinsDirection(OUTPUT);
-  setSequence();
+  incrementSequence();
   playSequence();
-  _wait = true;
+  _await_input = true;
   _last_input_time = millis();
+  _seq_match_count = 0;
   beep(50);
 }
 
 void playerTurn(){
   ///
   /// Player's turn actions:
-  /// - check if time's up
+  /// - Check if time's up
+  /// - Define the expected from the player
+  /// - Setup pins into input mode
+  /// - Read pins for input
+  /// - Handle game termination early
+  /// - Otherwise, check if the player is done passing input
+  /// - Verify player turn is over
   ///
-  _times_up = millis() - _last_input_time > PLAYER_WAIT_TIME;
+  _is_wait_expired = millis() - _last_input_time > PLAYER_WAIT_TIME;
+  _expected_input = _sequence[_seq_match_count];
+
   setAllPinsDirection(INPUT);
 
-  if(_times_up){
-    doLoseProcess();
+  if(!_input_active){
+    Serial.print("Expected: ");
+    Serial.println(_expected_input);
+    readInputs();
+  }
+
+  if(_is_wait_expired || _is_game_over){
+    terminateGame();
     return;
   }
 
-  if(!_button_down){
-    readPins();
-  }
-
-  if(_button_down && digitalRead(_last_input) == LOW){  // Check if the player released the button
-    onButtonDown();
+  if(_input_active && digitalRead(_last_input) == LOW){
+    verifyTurnFinished();
   }
 }
 
@@ -218,7 +235,7 @@ void setup() {
 }
 
 void loop() {
-  if(!_wait){
+  if(!_await_input){
     arduinoTurn();
   }else{
     playerTurn();
